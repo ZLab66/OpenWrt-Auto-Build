@@ -11,12 +11,14 @@
 # 许可证详情请查看仓库根目录下的 LICENSE 文件
 #
 
+
 # OpenWrt 官方稳定版更新检查
 
 name: Update Checker
 
+# 工作流触发方式
 on:
-  # 每天北京时间凌晨 2 点检查
+  # 每天北京时间凌晨 2 点自动检查
   schedule:
     - cron: '0 18 * * *'
 
@@ -29,46 +31,65 @@ on:
         type: string
         default: ''
 
-# 允许触发当前仓库的构建工作流
+# 允许检查 Release 并触发构建工作流
 permissions:
   contents: write
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
+      # 获取 OpenWrt 官方稳定版 Tag
       - name: 获取 OpenWrt 稳定版 Tag
         id: release
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # 手动指定了版本就使用指定版本
           if [ -n "$REQUESTED_TAG" ]; then
             TAG="$REQUESTED_TAG"
           else
-            # 从 OpenWrt 官方 GitHub Releases 获取最新正式版
+            # 获取 OpenWrt 官方最新正式稳定版
             RESPONSE=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/openwrt/openwrt/releases/latest)
+
             TAG=$(echo "$RESPONSE" | jq -er '.tag_name')
           fi
 
-          # 只接受正式版本号，排除 RC、Beta 等版本
+          # 只接受正式稳定版版本号
           if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "无效的正式版本 Tag：$TAG"
+            echo "错误：无效的正式版本 Tag：$TAG"
             exit 1
           fi
 
-          echo "发现 OpenWrt 版本：$TAG"
+          # 验证指定版本确实存在于 OpenWrt 官方 Releases
+          STATUS=$(curl -sS -o /tmp/openwrt-release.json \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/openwrt/openwrt/releases/tags/$TAG")
+
+          if [ "$STATUS" != "200" ]; then
+            echo "错误：OpenWrt 官方不存在该正式版本：$TAG"
+            cat /tmp/openwrt-release.json
+            exit 1
+          fi
+
+          echo "确认 OpenWrt 官方版本：$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: 检查是否已经成功发布
+      # 检查当前版本是否已经成功发布固件
+      - name: 检查固件发布状态
         id: published
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |
-          # 检查当前仓库是否已经存在该版本的 Release
+          # 查询当前仓库中对应版本的 Release
           STATUS=$(curl -sS -o /tmp/release.json \
             -w '%{http_code}' \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -76,17 +97,31 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
 
           if [ "$STATUS" = "200" ]; then
-            echo "该版本已经发布，跳过构建：$TAG"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+
+            # 检查 Release 是否已经包含目标固件
+            HAS_FIRMWARE=$(jq -r \
+              'any(.assets[]?; .name | endswith("combined-efi.img.gz"))' \
+              /tmp/release.json)
+
+            if [ "$HAS_FIRMWARE" = "true" ]; then
+              echo "该版本固件已经成功发布，跳过构建：$TAG"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "该版本 Release 尚未包含目标固件，允许重新构建：$TAG"
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+            fi
+
           elif [ "$STATUS" = "404" ]; then
-            echo "该版本尚未发布，可以触发构建：$TAG"
+            echo "该版本尚未发布，可以开始构建：$TAG"
             echo "exists=false" >> "$GITHUB_OUTPUT"
+
           else
-            echo "GitHub API 请求失败，HTTP 状态码：$STATUS"
+            echo "错误：GitHub API 请求失败，HTTP 状态码：$STATUS"
             cat /tmp/release.json
             exit 1
           fi
 
+      # 触发 OpenWrt 自动编译
       - name: 触发 OpenWrt 编译
         if: steps.published.outputs.exists == 'false'
         env:
@@ -105,4 +140,4 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/dispatches" \
             -d "$PAYLOAD"
 
-          echo "已触发 OpenWrt $TAG 编译"
+          echo "已成功发送构建请求：$TAG"

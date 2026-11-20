@@ -1,13 +1,16 @@
 
 #
-# 项目：https://github.com/P3TERX/Actions-OpenWrt
-# 文件：.github/workflows/openwrt-builder.yml
-# 说明：使用 GitHub Actions 自动编译 OpenWrt 官方稳定版
+# 项目名称：OpenWrt-Auto-Build
+# 项目地址：https://github.com/ZhangZhang1128/OpenWrt-Auto-Build
+# 基于项目：https://github.com/P3TERX/Actions-OpenWrt
+# 文件名称：openwrt-builder.yml
+# 文件用途：通过 GitHub Actions 自动编译 OpenWrt 官方稳定版固件
 #
-# 版权所有 (c) 2019-2024 P3TERX <https://p3terx.com>
-# 本项目遵循 MIT 开源许可证
-# 许可证详情请查看 /LICENSE
+# 原项目版权 (c) 2019-2024 P3TERX <https://p3terx.com>
+# 本项目基于 MIT 许可证开源
+# 许可证详情请查看仓库根目录下的 LICENSE 文件
 #
+
 
 name: OpenWrt Builder
 

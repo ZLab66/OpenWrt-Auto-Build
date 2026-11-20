@@ -1,4 +1,16 @@
 
+#
+# 项目名称：OpenWrt-Auto-Build
+# 项目地址：https://github.com/ZhangZhang1128/OpenWrt-Auto-Build
+# 基于项目：https://github.com/P3TERX/Actions-OpenWrt
+# 文件名称：update-checker.yml
+# 文件用途：定时检查 OpenWrt 官方稳定版更新，并触发固件自动编译与发布
+#
+# 原项目版权 (c) 2019-2024 P3TERX <https://p3terx.com>
+# 本项目基于 MIT 许可证开源
+# 许可证详情请查看仓库根目录下的 LICENSE 文件
+#
+
 # OpenWrt 官方稳定版更新检查
 
 name: Update Checker

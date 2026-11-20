@@ -1,24 +1,38 @@
+
 #
-# https://github.com/P3TERX/Actions-OpenWrt
+# 项目：https://github.com/P3TERX/Actions-OpenWrt
+# 文件：.github/workflows/openwrt-builder.yml
+# 说明：使用 GitHub Actions 自动编译 OpenWrt 官方稳定版
 #
-# File: .github/workflows/openwrt-bulder.yml
-# Description: Build OpenWrt using GitHub Actions
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
+# 版权所有 (c) 2019-2024 P3TERX <https://p3terx.com>
+# 本项目遵循 MIT 开源许可证
+# 许可证详情请查看 /LICENSE
 #
 
 name: OpenWrt Builder
 
+# 工作流触发方式
 on:
+  # 接收版本检查工作流发来的构建请求
   repository_dispatch:
-  workflow_dispatch:
+    types: [openwrt_release]
 
+  # 支持手动运行，可指定版本 Tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定 OpenWrt 版本 Tag，留空则使用最新稳定版'
+        required: false
+        type: string
+        default: ''
+
+# 授予工作流发布 GitHub Release 的权限
+permissions:
+  contents: write
+
+# 全局环境变量
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/openwrt/openwrt
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
@@ -33,10 +47,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout
+    # 检出当前配置仓库
+    - name: 检出配置仓库
       uses: actions/checkout@main
 
-    - name: Initialization environment
+    # 初始化编译环境
+    - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -50,35 +66,96 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    - name: Clone source code
+    # 确定本次编译的官方版本
+    - name: 获取 OpenWrt 版本
+      id: source
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+        MANUAL_TAG: ${{ inputs.tag }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # 自动触发时使用版本检查器传来的 Tag
+        if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+          TAG="$DISPATCH_TAG"
+        else
+          # 手动运行时使用指定 Tag
+          TAG="$MANUAL_TAG"
+        fi
+
+        # 未指定版本时获取官方最新稳定版
+        if [ -z "$TAG" ]; then
+          echo "正在获取 OpenWrt 最新正式稳定版..."
+          TAG=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/openwrt/openwrt/releases/latest \
+            | jq -er '.tag_name')
+        fi
+
+        # 只允许正式稳定版版本号
+        if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "错误：无效的正式版本 Tag：$TAG"
+          exit 1
+        fi
+
+        echo "本次编译版本：$TAG"
+
+        # 检查该版本是否已经发布
+        STATUS=$(curl -sS -o /tmp/release.json \
+          -w '%{http_code}' \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+
+        if [ "$STATUS" = "200" ]; then
+          echo "该版本已经发布，禁止重复构建：$TAG"
+          exit 1
+        elif [ "$STATUS" != "404" ]; then
+          echo "GitHub API 请求失败，HTTP 状态码：$STATUS"
+          cat /tmp/release.json
+          exit 1
+        fi
+
+        # 将版本号传递给后续步骤
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
+
+    # 下载指定版本的官方源码
+    - name: 下载 OpenWrt 官方源码
       working-directory: /workdir
       run: |
         df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        git clone --depth 1 --branch "$SOURCE_TAG" "$REPO_URL" openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: Load custom feeds
+    # 加载自定义 feeds
+    - name: 加载自定义 feeds
       run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
+        [ -e "$FEEDS_CONF" ] && mv "$FEEDS_CONF" openwrt/feeds.conf.default
+        chmod +x "$DIY_P1_SH"
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
 
-    - name: Update feeds
+    # 更新 feeds
+    - name: 更新 feeds
       run: cd openwrt && ./scripts/feeds update -a
 
-    - name: Install feeds
+    # 安装 feeds
+    - name: 安装 feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: Load custom configuration
+    # 加载自定义配置和插件
+    - name: 加载自定义配置
       run: |
         [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
+        [ -e "$CONFIG_FILE" ] && mv "$CONFIG_FILE" openwrt/.config
+        chmod +x "$DIY_P2_SH"
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: Download package
+    # 下载软件包源码
+    - name: 下载软件包
       id: package
       run: |
         cd openwrt
@@ -87,29 +164,33 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    - name: Compile the firmware
+    # 编译固件
+    - name: 编译固件
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) thread compile"
+        echo -e "$(nproc) 线程开始编译"
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    - name: Check space usage
+    # 检查磁盘空间
+    - name: 检查磁盘空间
       if: (!cancelled())
       run: df -hT
 
-    - name: Upload bin directory
+    # 上传完整 bin 目录（默认关闭）
+    - name: 上传 bin 目录
       uses: actions/upload-artifact@main
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: Organize files
+    # 整理固件文件
+    - name: 整理固件文件
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
@@ -118,43 +199,62 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware directory
+    # 上传固件目录作为构建附件
+    - name: 上传固件目录
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: Generate release tag
+    # 准备 Release 文件
+    - name: 准备 Release 文件
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+        # 只选择 x86_64 Generic EFI 压缩镜像
+        RELEASE_FILE=$(find "$FIRMWARE" -maxdepth 1 -type f \
+          -name '*combined-efi.img.gz' -print -quit)
 
-    - name: Upload firmware to release
+        # 没有找到目标固件则停止发布
+        if [ -z "$RELEASE_FILE" ]; then
+          echo "错误：没有找到 combined-efi.img.gz 压缩镜像"
+          echo "请检查 .config 中的镜像输出配置"
+          exit 1
+        fi
+
+        echo "准备发布文件：$RELEASE_FILE"
+        echo "release_file=$RELEASE_FILE" >> "$GITHUB_OUTPUT"
+        echo "release_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
+
+        # 生成 Release 说明
+        cat > release.txt << EOF
+        OpenWrt 官方稳定版：$SOURCE_TAG
+
+        目标平台：x86_64 Generic
+        固件格式：SquashFS Combined EFI
+        编译来源：OpenWrt 官方仓库
+        EOF
+
+        echo "status=success" >> "$GITHUB_OUTPUT"
+
+    # 发布固件到 GitHub Releases
+    - name: 发布固件到 GitHub Releases
       uses: softprops/action-gh-release@master
       if: steps.tag.outputs.status == 'success' && !cancelled()
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
+        name: OpenWrt ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+        files: ${{ steps.tag.outputs.release_file }}
+        overwrite_files: false
+        fail_on_unmatched_files: true
 
-    - name: Delete workflow runs
+    # 清理旧的工作流运行记录
+    - name: 清理工作流运行记录
       uses: Mattraks/delete-workflow-runs@main
       with:
         retain_days: 0
         keep_minimum_runs: 2
-
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

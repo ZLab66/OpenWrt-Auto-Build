@@ -30,18 +30,16 @@
 
 1. Fork 或克隆本仓库。
 2. 根据需要修改仓库中的 `.config` 文件。
-3. 根据需要修改 `feeds.conf.default` 和自定义脚本。
-4. 进入 GitHub 仓库的 Actions 页面。
-5. 选择对应的工作流，手动启动构建。
-6. 留空版本 Tag 时自动获取最新正式稳定版，也可以手动指定版本。
-7. 构建成功后，在仓库的 Releases 页面获取固件。
+3. 进入 GitHub 仓库的 Actions 页面。
+4. 选择对应的工作流，手动启动构建。
+5. 留空版本 Tag 时自动获取最新正式稳定版，也可以手动指定版本。
+6. 构建成功后，在仓库的 Releases 页面获取固件。
 
 ## 仓库文件说明
 
 | 文件或目录 | 用途 |
 |---|---|
 | `.config` | OpenWrt 固件配置文件 |
-| `feeds.conf.default` | 第三方软件源配置 |
 | `diy-part1.sh` | 更新软件源之前执行的自定义脚本 |
 | `diy-part2.sh` | 安装软件源之后执行的自定义脚本 |
 | `.github/workflows/openwrt-builder.yml` | 固件编译与发布工作流 |

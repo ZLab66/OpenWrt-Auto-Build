@@ -1,59 +1,96 @@
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-#
-# File: .github/workflows/update-checker.yml
-# Description: Source code update checker
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
+
+# OpenWrt 官方稳定版更新检查
 
 name: Update Checker
 
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-
 on:
+  # 每天北京时间凌晨 2 点检查
+  schedule:
+    - cron: '0 18 * * *'
+
+  # 支持手动指定版本，留空则检查最新稳定版
   workflow_dispatch:
-#  schedule:
-#    - cron: 0 */18 * * *
+    inputs:
+      tag:
+        description: '指定 OpenWrt Tag，例如 v25.12.6，留空使用最新稳定版'
+        required: false
+        type: string
+        default: ''
+
+# 允许触发当前仓库的构建工作流
+permissions:
+  contents: write
 
 jobs:
   check:
     runs-on: ubuntu-latest
 
     steps:
+      - name: 获取 OpenWrt 稳定版 Tag
+        id: release
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          # 手动指定了版本就使用指定版本
+          if [ -n "$REQUESTED_TAG" ]; then
+            TAG="$REQUESTED_TAG"
+          else
+            # 从 OpenWrt 官方 GitHub Releases 获取最新正式版
+            RESPONSE=$(curl -fsSL \
+              https://api.github.com/repos/openwrt/openwrt/releases/latest)
+            TAG=$(echo "$RESPONSE" | jq -er '.tag_name')
+          fi
 
-    - name: Get Commit Hash
-      id: getHash
-      run: |
-        git clone --depth 1 $REPO_URL -b $REPO_BRANCH .
-        echo "commitHash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          # 只接受正式版本号，排除 RC、Beta 等版本
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "无效的正式版本 Tag：$TAG"
+            exit 1
+          fi
 
-    - name: Compare Commit Hash
-      id: cacheHash
-      uses: actions/cache@v3
-      with:
-        path: .commitHash
-        key: commitHash_${{ steps.getHash.outputs.commitHash }}
+          echo "发现 OpenWrt 版本：$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-    - name: Save New Commit Hash
-      if: steps.cacheHash.outputs.cache-hit != 'true'
-      run: |
-        echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
+      - name: 检查是否已经成功发布
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          # 检查当前仓库是否已经存在该版本的 Release
+          STATUS=$(curl -sS -o /tmp/release.json \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
 
-    - name: Trigger build
-      if: steps.cacheHash.outputs.cache-hit != 'true'
-      uses: peter-evans/repository-dispatch@v2
-      with:
-        token: ${{ github.token }}
-        event-type: Source Code Update
+          if [ "$STATUS" = "200" ]; then
+            echo "该版本已经发布，跳过构建：$TAG"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif [ "$STATUS" = "404" ]; then
+            echo "该版本尚未发布，可以触发构建：$TAG"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "GitHub API 请求失败，HTTP 状态码：$STATUS"
+            cat /tmp/release.json
+            exit 1
+          fi
 
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@v2
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
+      - name: 触发 OpenWrt 编译
+        if: steps.published.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          # 将版本 Tag 传递给构建工作流
+          PAYLOAD=$(jq -n \
+            --arg tag "$TAG" \
+            '{event_type:"openwrt_release",client_payload:{tag:$tag}}')
+
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/dispatches" \
+            -d "$PAYLOAD"
+
+          echo "已触发 OpenWrt $TAG 编译"

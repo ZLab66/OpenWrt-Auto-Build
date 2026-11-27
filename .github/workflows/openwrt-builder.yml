@@ -10,30 +10,29 @@
 # 本项目基于 MIT 许可证开源
 # 许可证详情请查看仓库根目录下的 LICENSE 文件
 #
-
-
-# OpenWrt 固件自动编译与发布
+# 文件用途：编译 OpenWrt 官方稳定维护分支并发布固件
+#
 
 name: OpenWrt Builder
 
-# 工作流触发方式
 on:
-  # 接收版本检查工作流发来的构建请求
+  # 接收版本检查器的编译请求
   repository_dispatch:
     types: [openwrt_release]
 
-  # 支持手动运行，可指定版本 Tag
+  # 支持手动运行
   workflow_dispatch:
     inputs:
       tag:
-        description: '指定 OpenWrt 版本 Tag，留空则使用最新稳定版'
+        description: '指定 OpenWrt 版本 Tag，留空使用最新稳定版'
         required: false
         type: string
         default: ''
 
-# 授予工作流发布 GitHub Release 的权限
+# 编译、发布和清理工作流记录所需权限
 permissions:
   contents: write
+  actions: write
 
 # 全局环境变量
 env:
@@ -56,8 +55,134 @@ jobs:
       - name: 检出配置仓库
         uses: actions/checkout@main
 
+      # 确定官方稳定分支和本次编译 Commit
+      - name: 获取 OpenWrt 源码版本
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          DISPATCH_BRANCH: ${{ github.event.client_payload.branch }}
+          DISPATCH_COMMIT: ${{ github.event.client_payload.commit }}
+          DISPATCH_RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+          MANUAL_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 自动触发时使用检查器传来的 Tag
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            TAG="$MANUAL_TAG"
+          fi
+
+          # 未指定版本时获取官方最新正式稳定版
+          if [ -z "$TAG" ]; then
+            RESPONSE=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/openwrt/openwrt/releases/latest)
+
+            TAG=$(echo "$RESPONSE" | jq -er '.tag_name')
+          fi
+
+          # 验证正式稳定版 Tag
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "错误：无效的正式版本 Tag：$TAG"
+            exit 1
+          fi
+
+          # 验证官方 Release
+          STATUS=$(curl -sS -o /tmp/openwrt-release.json \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/openwrt/openwrt/releases/tags/$TAG")
+
+          if [ "$STATUS" != "200" ]; then
+            echo "错误：OpenWrt 官方不存在该正式版本：$TAG"
+            cat /tmp/openwrt-release.json
+            exit 1
+          fi
+
+          # 根据正式版本号确定维护分支
+          VERSION="${TAG#v}"
+          SERIES="${VERSION%.*}"
+          BRANCH="openwrt-$SERIES"
+
+          # 如果是自动触发，检查传入的分支是否正确
+          if [ -n "$DISPATCH_BRANCH" ] && [ "$DISPATCH_BRANCH" != "$BRANCH" ]; then
+            echo "错误：传入分支与正式版本不匹配"
+            exit 1
+          fi
+
+          # 自动触发使用检查器传来的 Commit
+          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "$DISPATCH_COMMIT" ]; then
+            COMMIT="$DISPATCH_COMMIT"
+          else
+            # 手动运行时获取维护分支最新 Commit
+            COMMIT=$(git ls-remote "$REPO_URL" "refs/heads/$BRANCH" | awk '{print $1}')
+          fi
+
+          if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "错误：无法获取有效的 Commit：$COMMIT"
+            exit 1
+          fi
+
+          # 生成唯一 Release Tag
+          SHORT_COMMIT="${COMMIT:0:12}"
+          RELEASE_TAG="${BRANCH}-${SHORT_COMMIT}"
+
+          # 检查自动触发传来的发布标记
+          if [ -n "$DISPATCH_RELEASE_TAG" ] && [ "$DISPATCH_RELEASE_TAG" != "$RELEASE_TAG" ]; then
+            echo "错误：发布 Tag 与 Commit 不匹配"
+            exit 1
+          fi
+
+          echo "官方稳定版：$TAG"
+          echo "维护分支：$BRANCH"
+          echo "编译 Commit：$COMMIT"
+          echo "发布 Tag：$RELEASE_TAG"
+
+          # 检查是否已经成功发布
+          STATUS=$(curl -sS -o /tmp/release.json \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+
+          if [ "$STATUS" = "200" ]; then
+            HAS_FIRMWARE=$(jq -r \
+              'any(.assets[]?; .name | endswith("combined-efi.img.gz"))' \
+              /tmp/release.json)
+
+            if [ "$HAS_FIRMWARE" = "true" ]; then
+              echo "该 Commit 已经成功发布，跳过编译：$RELEASE_TAG"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "已有 Release 但缺少固件，允许重新编译"
+
+          elif [ "$STATUS" != "404" ]; then
+            echo "错误：GitHub API 请求失败，HTTP 状态码：$STATUS"
+            cat /tmp/release.json
+            exit 1
+          fi
+
+          # 将版本信息传递给后续步骤
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
       # 初始化编译环境
       - name: 初始化编译环境
+        if: steps.source.outputs.skip != 'true'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -71,100 +196,37 @@ jobs:
           sudo mkdir -p /workdir
           sudo chown "$USER:$GROUPS" /workdir
 
-      # 确定本次编译的官方版本
-      - name: 获取 OpenWrt 版本
-        id: source
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
-          MANUAL_TAG: ${{ inputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 自动触发时使用版本检查器传来的 Tag
-          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
-            TAG="$DISPATCH_TAG"
-          else
-            # 手动运行时使用指定 Tag
-            TAG="$MANUAL_TAG"
-          fi
-
-          # 未指定版本时获取官方最新正式稳定版
-          if [ -z "$TAG" ]; then
-            echo "正在获取 OpenWrt 最新正式稳定版..."
-
-            RESPONSE=$(curl -fsSL \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/openwrt/openwrt/releases/latest)
-
-            TAG=$(echo "$RESPONSE" | jq -er '.tag_name')
-          fi
-
-          # 只允许正式稳定版版本号
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "错误：无效的正式版本 Tag：$TAG"
-            exit 1
-          fi
-
-          # 验证版本确实存在于 OpenWrt 官方 Releases
-          STATUS=$(curl -sS -o /tmp/openwrt-release.json \
-            -w '%{http_code}' \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/openwrt/openwrt/releases/tags/$TAG")
-
-          if [ "$STATUS" != "200" ]; then
-            echo "错误：OpenWrt 官方不存在该正式版本：$TAG"
-            cat /tmp/openwrt-release.json
-            exit 1
-          fi
-
-          echo "确认 OpenWrt 官方版本：$TAG"
-
-          # 检查当前仓库是否已经发布该版本
-          STATUS=$(curl -sS -o /tmp/release.json \
-            -w '%{http_code}' \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
-
-          if [ "$STATUS" = "200" ]; then
-
-            # 已有目标固件则禁止重复编译
-            HAS_FIRMWARE=$(jq -r \
-              'any(.assets[]?; .name | endswith("combined-efi.img.gz"))' \
-              /tmp/release.json)
-
-            if [ "$HAS_FIRMWARE" = "true" ]; then
-              echo "该版本已经发布固件，禁止重复构建：$TAG"
-              exit 1
-            fi
-
-            echo "该版本已有 Release，但缺少目标固件，允许补充发布：$TAG"
-
-          elif [ "$STATUS" = "404" ]; then
-            echo "该版本尚无 Release，可以正常构建：$TAG"
-
-          else
-            echo "错误：GitHub API 请求失败，HTTP 状态码：$STATUS"
-            cat /tmp/release.json
-            exit 1
-          fi
-
-          # 将版本号传递给后续步骤
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
-
-      # 下载指定版本的官方源码
+      # 下载指定维护分支的准确 Commit
       - name: 下载 OpenWrt 官方源码
+        if: steps.source.outputs.skip != 'true'
         working-directory: /workdir
         run: |
           df -hT "$PWD"
-          git clone --depth 1 --branch "$SOURCE_TAG" "$REPO_URL" openwrt
+
+          # 先克隆对应维护分支
+          git clone --depth 1 --branch "$SOURCE_BRANCH" "$REPO_URL" openwrt
+
+          cd openwrt
+
+          # 获取检查器指定的准确 Commit
+          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach "$SOURCE_COMMIT"
+
+          # 确认实际源码 Commit
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+
+          if [ "$ACTUAL_COMMIT" != "$SOURCE_COMMIT" ]; then
+            echo "错误：实际源码 Commit 与目标 Commit 不一致"
+            exit 1
+          fi
+
+          echo "源码 Commit 确认：$ACTUAL_COMMIT"
+
           ln -sf /workdir/openwrt "$GITHUB_WORKSPACE/openwrt"
 
       # 加载自定义 feeds
       - name: 加载自定义 feeds
+        if: steps.source.outputs.skip != 'true'
         run: |
           [ -e "$FEEDS_CONF" ] && mv "$FEEDS_CONF" openwrt/feeds.conf.default
           chmod +x "$DIY_P1_SH"
@@ -173,14 +235,17 @@ jobs:
 
       # 更新 feeds
       - name: 更新 feeds
+        if: steps.source.outputs.skip != 'true'
         run: cd openwrt && ./scripts/feeds update -a
 
       # 安装 feeds
       - name: 安装 feeds
+        if: steps.source.outputs.skip != 'true'
         run: cd openwrt && ./scripts/feeds install -a
 
       # 加载自定义配置和插件
       - name: 加载自定义配置
+        if: steps.source.outputs.skip != 'true'
         run: |
           [ -e files ] && mv files openwrt/files
           [ -e "$CONFIG_FILE" ] && mv "$CONFIG_FILE" openwrt/.config
@@ -190,7 +255,7 @@ jobs:
 
       # 下载软件包源码
       - name: 下载软件包
-        id: package
+        if: steps.source.outputs.skip != 'true'
         run: |
           cd openwrt
           make defconfig
@@ -201,6 +266,7 @@ jobs:
       # 编译固件
       - name: 编译固件
         id: compile
+        if: steps.source.outputs.skip != 'true'
         run: |
           cd openwrt
           echo "$(nproc) 线程开始编译"
@@ -217,13 +283,11 @@ jobs:
           elif make -j1 V=s; then
             echo "详细日志模式编译成功"
 
-          # 三次全部失败，明确终止工作流
           else
             echo "错误：三次编译均失败"
             exit 1
           fi
 
-          # 只有编译成功后才记录成功状态
           echo "status=success" >> "$GITHUB_OUTPUT"
 
           # 获取设备名称
@@ -235,7 +299,7 @@ jobs:
 
       # 检查磁盘空间
       - name: 检查磁盘空间
-        if: always() && !cancelled()
+        if: always() && !cancelled() && steps.source.outputs.skip != 'true'
         run: df -hT
 
       # 上传完整 bin 目录（默认关闭）
@@ -273,7 +337,6 @@ jobs:
           RELEASE_FILE=$(find "$FIRMWARE" -maxdepth 1 -type f \
             -name '*combined-efi.img.gz' -print -quit)
 
-          # 没有找到目标固件则停止发布
           if [ -z "$RELEASE_FILE" ]; then
             echo "错误：没有找到 combined-efi.img.gz 压缩镜像"
             echo "请检查 .config 中的镜像输出配置"
@@ -282,12 +345,13 @@ jobs:
 
           echo "准备发布文件：$RELEASE_FILE"
           echo "release_file=$RELEASE_FILE" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
           # 生成 Release 说明
           cat > release.txt << EOF
           OpenWrt 官方稳定版：$SOURCE_TAG
-
+          维护分支：$SOURCE_BRANCH
+          源码 Commit：$SOURCE_COMMIT
           目标平台：x86_64 Generic
           固件格式：SquashFS Combined EFI
           编译来源：OpenWrt 官方仓库
@@ -311,6 +375,7 @@ jobs:
 
       # 清理旧的工作流运行记录
       - name: 清理工作流运行记录
+        if: always()
         uses: Mattraks/delete-workflow-runs@main
         with:
           retain_days: 0

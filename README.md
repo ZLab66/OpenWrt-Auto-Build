@@ -1,75 +1,91 @@
-# OpenWrt-Auto-Build
+# OpenWrt x86_64 固件
 
-基于 GitHub Actions 的 OpenWrt x86_64 固件自动构建项目。
-
-本项目以 [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt) 为基础进行定制，使用 OpenWrt 官方稳定版源码，针对 x86_64 Generic 设备构建固件。
-
-## 项目特点
-
-- **自动检查更新**：定时检查 OpenWrt 官方正式稳定版更新。
-- **自动编译固件**：检测到新版本后自动触发 GitHub Actions 构建。
-- **手动指定版本**：支持手动触发构建，也可以指定 OpenWrt 版本 Tag。
-- **自动重试编译**：依次尝试多线程、单线程和详细日志模式，提高编译成功率。
-- **自定义软件源**：支持 iStore、PassWall 等第三方软件源。
-- **自定义固件配置**：通过 `.config` 文件管理固件功能和软件包。
-- **自动发布固件**：编译成功后自动创建 GitHub Release。
+基于 OpenWrt 官方正式稳定版源码编译的 x86_64 通用固件，采用 SquashFS 文件系统和 GRUB EFI 引导方式，适用于支持 x86_64 架构的软路由、工控机及普通 PC。
 
 ## 固件信息
 
 | 项目 | 配置 |
 |---|---|
-| 目标平台 | x86_64 |
+| 固件平台 | x86_64 |
 | 目标设备 | Generic |
+| CPU 架构 | x86_64 |
 | 文件系统 | SquashFS |
 | 引导方式 | GRUB EFI |
-| 镜像格式 | Combined EFI |
+| 镜像类型 | Combined EFI |
 | 压缩格式 | GZIP |
-| 源码版本 | OpenWrt 官方正式稳定版 |
+| 默认 LAN 地址 | `192.168.1.1` |
+| 默认管理地址 | `http://192.168.1.1` |
+| 源码 | OpenWrt 官方正式稳定版维护分支 |
 
-## 使用说明
+## 内置功能与软件
 
-1. Fork 或克隆本仓库。
-2. 根据需要修改仓库中的 `.config` 文件。
-3. 进入 GitHub 仓库的 Actions 页面。
-4. 选择对应的工作流，手动启动构建。
-5. 留空版本 Tag 时自动获取最新正式稳定版，也可以手动指定版本。
-6. 构建成功后，在仓库的 Releases 页面获取固件。
+固件基于 OpenWrt 官方源码编译，并根据实际使用需求添加第三方软件源及相关软件包。
 
-## 仓库文件说明
-
-| 文件或目录 | 用途 |
+| 插件列表 | 说明 |
 |---|---|
-| `.config` | OpenWrt 固件配置文件 |
-| `diy-part1.sh` | 更新软件源之前执行的自定义脚本 |
-| `diy-part2.sh` | 安装软件源之后执行的自定义脚本 |
-| `.github/workflows/openwrt-builder.yml` | 固件编译与发布工作流 |
-| `.github/workflows/update-checker.yml` | 官方稳定版更新检查工作流 |
+| iStore | 软件包管理与应用安装 |
+| PassWall | 网络代理与分流 |
+| Argon | LuCI 管理界面主题 |
+| OpenAppFilter | 上网行为管理 |
+| 待添加... | 待添加... |
 
-## 固件下载
+具体软件包以每次发布的固件配置为准。
 
-编译成功后，固件将自动发布到 GitHub Releases。
+## 硬件兼容性
 
-发布内容仅保留压缩后的 Combined EFI 镜像文件：
+本固件面向 x86_64 Generic 平台，适用于：
 
-`*combined-efi.img.gz`
+- x86_64 软路由设备
+- Intel / AMD 架构工控机
+- 普通 x86_64 台式机
+- 支持 UEFI 启动的迷你主机
 
-历史版本 Release 不会因新版本发布而自动删除。
+请确认设备支持 x86_64 架构，并具有兼容的 UEFI 启动环境。
+
+## 固件安装
+
+### 安装前准备
+
+1. 确认设备为 x86_64 架构。
+2. 确认设备支持 UEFI 启动。
+3. 下载对应版本的 Combined EFI 固件。
+4. 解压 `.gz` 文件，获得 `.img` 镜像。
+5. 备份设备原有系统及重要数据。
+
+### 写入固件
+
+可以使用以下工具将镜像写入目标硬盘或 SSD：
+
+- [balenaEtcher](https://etcher.balena.io/)
+- [Rufus](https://rufus.ie/)
+- [USB Image Tool](https://www.alexpage.de/usb-image-tool/)
+
+选择解压后的 `.img` 文件，写入目标存储设备。
+
+**注意：** 写入操作会覆盖目标磁盘上的原有数据，请确认磁盘选择正确。
+
+
+## 更新记录
+
+固件跟随 OpenWrt 官方正式稳定版对应的维护分支更新。
+
+每个发布版本均对应一个确定的源码 Commit，可通过 Release 名称识别源码版本。
+
+历史固件保留在 Releases 中，可按需下载使用。
+
+## 项目地址
+
+- 固件仓库：[ZLab66/OpenWrt-Auto-Build](https://github.com/ZLab66/OpenWrt-Auto-Build)
+- 固件下载：[GitHub Releases](https://github.com/ZLab66/OpenWrt-Auto-Build/releases)
+- OpenWrt 官方项目：[openwrt/openwrt](https://github.com/openwrt/openwrt)
 
 ## 致谢
 
-本项目的实现离不开以下开源项目及服务：
-
-- [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt)
 - [OpenWrt](https://github.com/openwrt/openwrt)
-- [GitHub Actions](https://github.com/features/actions)
-- [Microsoft Azure](https://azure.microsoft.com)
+- [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt)
 - [OpenWrt-Passwall](https://github.com/Openwrt-Passwall)
 - [LinkEase/iStore](https://github.com/linkease/istore)
-- [softprops/action-gh-release](https://github.com/softprops/action-gh-release)
-- [peter-evans/repository-dispatch](https://github.com/peter-evans/repository-dispatch)
+- [luci-theme-argon](https://github.com/jerrykuku/luci-theme-argon)
+- [OpenAppFilter](https://github.com/destan19/OpenAppFilter)
 
-## 开源许可
-
-本项目基于 [MIT License](https://github.com/P3TERX/Actions-OpenWrt/blob/master/LICENSE) 使用和修改。
-
-原项目版权归 P3TERX 所有，相关版权声明及许可证条款予以保留。
+本项目使用的第三方软件及组件遵循各自的开源许可证。
